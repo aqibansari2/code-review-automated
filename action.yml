@@ -1,4 +1,4 @@
-name: 'GPT-4 Code Review'
+name: 'GPT-4o Code Reviewer (Beam)'
 description: 'Automatically review code changes using GPT-4 and update PR with summary and feedback'
 
 inputs:
