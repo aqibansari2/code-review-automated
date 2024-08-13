@@ -168,7 +168,9 @@ async function analyzeFileChanges(
 		const hasCriticalFeedback =
 			criticalIndicator.trim().toLowerCase() === 'true'
 
-		console.log(`Analysis complete for ${filename}. Critical feedback: ${hasCriticalFeedback}`)
+		console.log(
+			`Analysis complete for ${filename}. Critical feedback: ${hasCriticalFeedback}`
+		)
 		return { feedback: feedback.trim(), hasCriticalFeedback }
 	} catch (error) {
 		console.error(`Error in analyzeFileChanges for ${filename}:`, error)
