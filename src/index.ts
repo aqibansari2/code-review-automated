@@ -14,18 +14,35 @@ interface FileAnalysis {
 	hasCriticalFeedback: boolean
 }
 
+interface Config {
+	contextLines: number
+	openAIModel: string
+}
+
+const config: Config = {
+	contextLines: 3,
+	openAIModel: 'gpt-4o', // Use a valid model name
+}
+
 async function getChangedFiles(
 	octokit: ReturnType<typeof github.getOctokit>,
 	context: typeof github.context
 ): Promise<FileDiff[]> {
-	const { data: files } = await octokit.rest.pulls.listFiles({
-		...context.repo,
-		pull_number: context.payload.pull_request!.number,
-	})
-	return files.map((file) => ({
-		filename: file.filename,
-		patch: file.patch || '',
-	}))
+	try {
+		console.log('Fetching changed files...')
+		const { data: files } = await octokit.rest.pulls.listFiles({
+			...context.repo,
+			pull_number: context.payload.pull_request!.number,
+		})
+		console.log(`Found ${files.length} changed files`)
+		return files.map((file) => ({
+			filename: file.filename,
+			patch: file.patch || '',
+		}))
+	} catch (error) {
+		console.error('Error in getChangedFiles:', error)
+		throw new Error(`Failed to get changed files: ${error}`)
+	}
 }
 
 async function getFileContent(
@@ -33,22 +50,35 @@ async function getFileContent(
 	context: typeof github.context,
 	filename: string
 ): Promise<string> {
-	const { data } = await octokit.rest.repos.getContent({
-		...context.repo,
-		path: filename,
-		ref: context.payload.pull_request!.head.sha,
-	})
-	if ('content' in data) {
-		return Buffer.from(data.content, 'base64').toString('utf-8')
+	try {
+		console.log(`Fetching content for file: ${filename}`)
+		const { data } = await octokit.rest.repos.getContent({
+			...context.repo,
+			path: filename,
+			ref: context.payload.pull_request!.head.sha,
+		})
+		if ('content' in data && typeof data.content === 'string') {
+			console.log(`Successfully fetched content for ${filename}`)
+			return Buffer.from(data.content, 'base64').toString('utf-8')
+		}
+		throw new Error(`Unable to get content for ${filename}`)
+	} catch (error) {
+		if (error instanceof Error && error.message.includes('too large')) {
+			console.warn(`File ${filename} is too large to fetch content. Skipping.`)
+			core.warning(`File ${filename} is too large to fetch content. Skipping.`)
+			return ''
+		}
+		console.error(`Error in getFileContent for ${filename}:`, error)
+		throw new Error(`Failed to get file content: ${error}`)
 	}
-	throw new Error(`Unable to get content for ${filename}`)
 }
 
 function extractContext(
 	fullContent: string,
 	patch: string,
-	contextLines: number = 3
+	contextLines: number = config.contextLines
 ): string {
+	console.log('Extracting context...')
 	const lines = fullContent.split('\n')
 	const patchLines = patch.split('\n')
 	let contextContent = ''
@@ -73,6 +103,7 @@ function extractContext(
 		}
 	}
 
+	console.log('Context extraction complete')
 	return contextContent.trim()
 }
 
@@ -80,26 +111,33 @@ async function generatePRSummary(
 	openai: OpenAIApi,
 	files: FileDiff[]
 ): Promise<string> {
+	console.log('Generating PR summary...')
 	let allChanges = files
 		.map((file) => `File: ${file.filename}\n\n${file.patch}\n\n`)
 		.join('---\n\n')
 
-	const response = await openai.createChatCompletion({
-		model: 'gpt-4o',
-		messages: [
-			{
-				role: 'system',
-				content:
-					'You are a helpful code reviewer. Provide a concise summary of the overall changes in this pull request. Your output should be structured as bullet points',
-			},
-			{
-				role: 'user',
-				content: `Summarize the following changes in the pull request:\n\n${allChanges}`,
-			},
-		],
-	})
+	try {
+		const response = await openai.createChatCompletion({
+			model: config.openAIModel,
+			messages: [
+				{
+					role: 'system',
+					content:
+						'You are a helpful code reviewer. Provide a concise summary of the overall changes in this pull request. Your output should be structured as bullet points',
+				},
+				{
+					role: 'user',
+					content: `Summarize the following changes in the pull request:\n\n${allChanges}`,
+				},
+			],
+		})
 
-	return response.data.choices[0].message?.content || ''
+		console.log('PR summary generated successfully')
+		return response.data.choices[0].message?.content || ''
+	} catch (error) {
+		console.error('Error in generatePRSummary:', error)
+		throw new Error(`Failed to generate PR summary: ${error}`)
+	}
 }
 
 async function analyzeFileChanges(
@@ -108,26 +146,34 @@ async function analyzeFileChanges(
 	patch: string,
 	context: string
 ): Promise<{ feedback: string; hasCriticalFeedback: boolean }> {
-	const response = await openai.createChatCompletion({
-		model: 'gpt-4o',
-		messages: [
-			{
-				role: 'system',
-				content:
-					"You are a helpful staff engineer who is reviewing code.\nProvide constructive feedback on the code changes. Each of the feedback should be numbered points. Each of the points should have a title called **Observation:** and **Actionable Feedback**.\nAn example is ```3. **Observation:** Potential Performance Issue\n**Actionable Feedback:** If `setPageTitle` involves any non-trivial computation, or if `useSidebarPageStore` has additional side effects, you may want to optimize the trigger. One way is by checking if the title is already 'Tasks' before calling `setPageTitle`.```\nFocus your feedback on the changed parts of the code (lines starting with '+' or '-'), but use the surrounding context to inform your analysis. At the end of your feedback, add a new line with just 'CRITICAL_FEEDBACK:' followed by 'true' if you have substantial or critical feedback, or 'false' if your feedback is minor or just positive.",
-			},
-			{
-				role: 'user',
-				content: `Review the following code changes for file ${filename}:\n\nChanged parts:\n${patch}\n\nBroader file context:\n${context}`,
-			},
-		],
-	})
+	try {
+		console.log(`Analyzing changes for file: ${filename}`)
+		const response = await openai.createChatCompletion({
+			model: config.openAIModel,
+			messages: [
+				{
+					role: 'system',
+					content:
+						"You are a helpful staff engineer who is reviewing code.\nProvide constructive feedback on the code changes. Each of the feedback should be numbered points. Each of the points should have a title called **Observation:** and **Actionable Feedback**.\nAn example is ```3. **Observation:** Potential Performance Issue\n**Actionable Feedback:** If `setPageTitle` involves any non-trivial computation, or if `useSidebarPageStore` has additional side effects, you may want to optimize the trigger. One way is by checking if the title is already 'Tasks' before calling `setPageTitle`.```\nFocus your feedback on the changed parts of the code (lines starting with '+' or '-'), but use the surrounding context to inform your analysis. At the end of your feedback, add a new line with just 'CRITICAL_FEEDBACK:' followed by 'true' if you have substantial or critical feedback, or 'false' if your feedback is minor or just positive.",
+				},
+				{
+					role: 'user',
+					content: `Review the following code changes for file ${filename}:\n\nChanged parts:\n${patch}\n\nBroader file context:\n${context}`,
+				},
+			],
+		})
 
-	const content = response.data.choices[0].message?.content || ''
-	const [feedback, criticalIndicator] = content.split('CRITICAL_FEEDBACK:')
-	const hasCriticalFeedback = criticalIndicator.trim().toLowerCase() === 'true'
+		const content = response.data.choices[0].message?.content || ''
+		const [feedback, criticalIndicator] = content.split('CRITICAL_FEEDBACK:')
+		const hasCriticalFeedback =
+			criticalIndicator.trim().toLowerCase() === 'true'
 
-	return { feedback: feedback.trim(), hasCriticalFeedback }
+		console.log(`Analysis complete for ${filename}. Critical feedback: ${hasCriticalFeedback}`)
+		return { feedback: feedback.trim(), hasCriticalFeedback }
+	} catch (error) {
+		console.error(`Error in analyzeFileChanges for ${filename}:`, error)
+		throw new Error(`Failed to analyze file changes: ${error}`)
+	}
 }
 
 async function updatePRDescription(
@@ -135,22 +181,29 @@ async function updatePRDescription(
 	context: typeof github.context,
 	summary: string
 ) {
-	const currentBody = context.payload.pull_request!.body || ''
-	const gpt4SummaryRegex = /## GPT-4 Summary\n\n[\s\S]*?(?=\n\n|$)/
-	const newSummary = `## GPT-4 Summary\n\n${summary}`
+	try {
+		console.log('Updating PR description...')
+		const currentBody = context.payload.pull_request!.body || ''
+		const gpt4SummaryRegex = /## GPT-4 Summary\n\n[\s\S]*?(?=\n\n|$)/
+		const newSummary = `## GPT-4 Summary\n\n${summary}`
 
-	let newBody: string
-	if (gpt4SummaryRegex.test(currentBody)) {
-		newBody = currentBody.replace(gpt4SummaryRegex, newSummary)
-	} else {
-		newBody = `${currentBody}\n\n${newSummary}`
+		let newBody: string
+		if (gpt4SummaryRegex.test(currentBody)) {
+			newBody = currentBody.replace(gpt4SummaryRegex, newSummary)
+		} else {
+			newBody = `${currentBody}\n\n${newSummary}`
+		}
+
+		await octokit.rest.pulls.update({
+			...context.repo,
+			pull_number: context.payload.pull_request!.number,
+			body: newBody,
+		})
+		console.log('PR description updated successfully')
+	} catch (error) {
+		console.error('Error in updatePRDescription:', error)
+		throw new Error(`Failed to update PR description: ${error}`)
 	}
-
-	await octokit.rest.pulls.update({
-		...context.repo,
-		pull_number: context.payload.pull_request!.number,
-		body: newBody,
-	})
 }
 
 async function addPRComment(
@@ -158,53 +211,59 @@ async function addPRComment(
 	context: typeof github.context,
 	analyses: FileAnalysis[]
 ) {
-	const criticalAnalyses = analyses.filter(
-		(analysis) => analysis.hasCriticalFeedback
-	)
+	try {
+		console.log('Adding PR comment...')
+		const criticalAnalyses = analyses.filter(
+			(analysis) => analysis.hasCriticalFeedback
+		)
 
-	if (criticalAnalyses.length === 0) {
-		console.log('No critical feedback to add to the PR.')
-		return
-	}
+		if (criticalAnalyses.length === 0) {
+			console.log('No critical feedback to add to the PR.')
+			return
+		}
 
-	// Get existing comments
-	const { data: existingComments } = await octokit.rest.issues.listComments({
-		...context.repo,
-		issue_number: context.payload.pull_request!.number,
-	})
-
-	// Find the existing GPT-4 Feedback comment
-	const existingFeedbackComment = existingComments.find((comment) =>
-		comment.body.startsWith('## GPT-4 Feedback')
-	)
-
-	let feedbackContent = '## GPT-4 Feedback\n\n'
-
-	for (const analysis of criticalAnalyses) {
-		feedbackContent += `### ${analysis.filename}\n\n`
-		feedbackContent += '```diff\n' + analysis.patch + '\n```\n\n'
-		feedbackContent += `${analysis.feedback}\n\n`
-	}
-
-	if (existingFeedbackComment) {
-		// Update existing comment
-		await octokit.rest.issues.updateComment({
-			...context.repo,
-			comment_id: existingFeedbackComment.id,
-			body: feedbackContent,
-		})
-	} else {
-		// Create new comment
-		await octokit.rest.issues.createComment({
+		const { data: existingComments } = await octokit.rest.issues.listComments({
 			...context.repo,
 			issue_number: context.payload.pull_request!.number,
-			body: feedbackContent,
 		})
+
+		const existingFeedbackComment = existingComments.find((comment) =>
+			comment.body?.startsWith('## GPT-4 Feedback')
+		)
+
+		let feedbackContent = '## GPT-4 Feedback\n\n'
+
+		for (const analysis of criticalAnalyses) {
+			feedbackContent += `### ${analysis.filename}\n\n`
+			feedbackContent += '```diff\n' + analysis.patch + '\n```\n\n'
+			feedbackContent += `${analysis.feedback}\n\n`
+		}
+
+		if (existingFeedbackComment) {
+			console.log('Updating existing feedback comment')
+			await octokit.rest.issues.updateComment({
+				...context.repo,
+				comment_id: existingFeedbackComment.id,
+				body: feedbackContent,
+			})
+		} else {
+			console.log('Creating new feedback comment')
+			await octokit.rest.issues.createComment({
+				...context.repo,
+				issue_number: context.payload.pull_request!.number,
+				body: feedbackContent,
+			})
+		}
+		console.log('PR comment added successfully')
+	} catch (error) {
+		console.error('Error in addPRComment:', error)
+		throw new Error(`Failed to add PR comment: ${error}`)
 	}
 }
 
 async function run(): Promise<void> {
 	try {
+		console.log('Starting code review process...')
 		const githubToken = core.getInput('GITHUB_TOKEN', { required: true })
 		const openaiApiKey = core.getInput('OPENAI_API_KEY', { required: true })
 
@@ -213,7 +272,7 @@ async function run(): Promise<void> {
 
 		const changedFiles = await getChangedFiles(octokit, github.context)
 
-		// Generate overall PR summary and analyze files in parallel
+		console.log('Analyzing changed files...')
 		const [prSummary, fileAnalyses] = await Promise.all([
 			generatePRSummary(openai, changedFiles),
 			Promise.all(
@@ -240,13 +299,20 @@ async function run(): Promise<void> {
 			),
 		])
 
-		// Update PR description and add comment in parallel
+		console.log('Updating PR description and adding comments...')
 		await Promise.all([
 			updatePRDescription(octokit, github.context, prSummary),
 			addPRComment(octokit, github.context, fileAnalyses),
 		])
+
+		console.log('Code review process completed successfully')
 	} catch (error) {
-		if (error instanceof Error) core.setFailed(error.message)
+		console.error('Error in run function:', error)
+		if (error instanceof Error) {
+			core.setFailed(error.message)
+		} else {
+			core.setFailed('An unknown error occurred')
+		}
 	}
 }
 
