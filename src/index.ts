@@ -29,18 +29,18 @@ async function getChangedFiles(
 	context: typeof github.context
 ): Promise<FileDiff[]> {
 	try {
-		console.log('Fetching changed files...')
+		core.info('Fetching changed files...')
 		const { data: files } = await octokit.rest.pulls.listFiles({
 			...context.repo,
 			pull_number: context.payload.pull_request!.number,
 		})
-		console.log(`Found ${files.length} changed files`)
+		core.info(`Found ${files.length} changed files`)
 		return files.map((file) => ({
 			filename: file.filename,
 			patch: file.patch || '',
 		}))
 	} catch (error) {
-		console.error('Error in getChangedFiles:', error)
+		core.error(`Error in getChangedFiles: ${error}`)
 		throw new Error(`Failed to get changed files: ${error}`)
 	}
 }
@@ -51,24 +51,23 @@ async function getFileContent(
 	filename: string
 ): Promise<string> {
 	try {
-		console.log(`Fetching content for file: ${filename}`)
+		core.info(`Fetching content for file: ${filename}`)
 		const { data } = await octokit.rest.repos.getContent({
 			...context.repo,
 			path: filename,
 			ref: context.payload.pull_request!.head.sha,
 		})
 		if ('content' in data && typeof data.content === 'string') {
-			console.log(`Successfully fetched content for ${filename}`)
+			core.info(`Successfully fetched content for ${filename}`)
 			return Buffer.from(data.content, 'base64').toString('utf-8')
 		}
 		throw new Error(`Unable to get content for ${filename}`)
 	} catch (error) {
 		if (error instanceof Error && error.message.includes('too large')) {
-			console.warn(`File ${filename} is too large to fetch content. Skipping.`)
 			core.warning(`File ${filename} is too large to fetch content. Skipping.`)
 			return ''
 		}
-		console.error(`Error in getFileContent for ${filename}:`, error)
+		core.error(`Error in getFileContent for ${filename}: ${error}`)
 		throw new Error(`Failed to get file content: ${error}`)
 	}
 }
@@ -78,7 +77,7 @@ function extractContext(
 	patch: string,
 	contextLines: number = config.contextLines
 ): string {
-	console.log('Extracting context...')
+	core.info('Extracting context...')
 	const lines = fullContent.split('\n')
 	const patchLines = patch.split('\n')
 	let contextContent = ''
@@ -103,7 +102,7 @@ function extractContext(
 		}
 	}
 
-	console.log('Context extraction complete')
+	core.info('Context extraction complete')
 	return contextContent.trim()
 }
 
@@ -111,7 +110,7 @@ async function generatePRSummary(
 	openai: OpenAIApi,
 	files: FileDiff[]
 ): Promise<string> {
-	console.log('Generating PR summary...')
+	core.info('Generating PR summary...')
 	let allChanges = files
 		.map((file) => `File: ${file.filename}\n\n${file.patch}\n\n`)
 		.join('---\n\n')
@@ -132,10 +131,10 @@ async function generatePRSummary(
 			],
 		})
 
-		console.log('PR summary generated successfully')
+		core.info('PR summary generated successfully')
 		return response.data.choices[0].message?.content || ''
 	} catch (error) {
-		console.error('Error in generatePRSummary:', error)
+		core.error(`Error in generatePRSummary: ${error}`)
 		throw new Error(`Failed to generate PR summary: ${error}`)
 	}
 }
@@ -147,7 +146,7 @@ async function analyzeFileChanges(
 	context: string
 ): Promise<{ feedback: string; hasCriticalFeedback: boolean }> {
 	try {
-		console.log(`Analyzing changes for file: ${filename}`)
+		core.info(`Analyzing changes for file: ${filename}`)
 		const response = await openai.createChatCompletion({
 			model: config.openAIModel,
 			messages: [
@@ -168,12 +167,12 @@ async function analyzeFileChanges(
 		const hasCriticalFeedback =
 			criticalIndicator.trim().toLowerCase() === 'true'
 
-		console.log(
+		core.info(
 			`Analysis complete for ${filename}. Critical feedback: ${hasCriticalFeedback}`
 		)
 		return { feedback: feedback.trim(), hasCriticalFeedback }
 	} catch (error) {
-		console.error(`Error in analyzeFileChanges for ${filename}:`, error)
+		core.error(`Error in analyzeFileChanges for ${filename}: ${error}`)
 		throw new Error(`Failed to analyze file changes: ${error}`)
 	}
 }
@@ -184,7 +183,7 @@ async function updatePRDescription(
 	summary: string
 ) {
 	try {
-		console.log('Updating PR description...')
+		core.info('Updating PR description...')
 		const currentBody = context.payload.pull_request!.body || ''
 		const newSummary = `## GPT-4 Summary\n\n${summary}`
 		const newBody = `${currentBody}\n\n${newSummary}`
@@ -194,9 +193,9 @@ async function updatePRDescription(
 			pull_number: context.payload.pull_request!.number,
 			body: newBody,
 		})
-		console.log('PR description updated successfully')
+		core.info('PR description updated successfully')
 	} catch (error) {
-		console.error('Error in updatePRDescription:', error)
+		core.error(`Error in updatePRDescription: ${error}`)
 		throw new Error(`Failed to update PR description: ${error}`)
 	}
 }
@@ -207,13 +206,13 @@ async function addPRComment(
 	analyses: FileAnalysis[]
 ) {
 	try {
-		console.log('Adding PR comment...')
+		core.info('Adding PR comment...')
 		const criticalAnalyses = analyses.filter(
 			(analysis) => analysis.hasCriticalFeedback
 		)
 
 		if (criticalAnalyses.length === 0) {
-			console.log('No critical feedback to add to the PR.')
+			core.info('No critical feedback to add to the PR.')
 			return
 		}
 
@@ -225,23 +224,23 @@ async function addPRComment(
 			feedbackContent += `${analysis.feedback}\n\n`
 		}
 
-		console.log('Creating new feedback comment')
+		core.info('Creating new feedback comment')
 		await octokit.rest.issues.createComment({
 			...context.repo,
 			issue_number: context.payload.pull_request!.number,
 			body: feedbackContent,
 		})
 
-		console.log('PR comment added successfully')
+		core.info('PR comment added successfully')
 	} catch (error) {
-		console.error('Error in addPRComment:', error)
+		core.error(`Error in addPRComment: ${error}`)
 		throw new Error(`Failed to add PR comment: ${error}`)
 	}
 }
 
 async function run(): Promise<void> {
 	try {
-		console.log('Starting code review process...')
+		core.info('Starting code review process...')
 		const githubToken = core.getInput('GITHUB_TOKEN', { required: true })
 		const openaiApiKey = core.getInput('OPENAI_API_KEY', { required: true })
 
@@ -250,7 +249,7 @@ async function run(): Promise<void> {
 
 		const changedFiles = await getChangedFiles(octokit, github.context)
 
-		console.log('Analyzing changed files...')
+		core.info('Analyzing changed files...')
 		const [prSummary, fileAnalyses] = await Promise.all([
 			generatePRSummary(openai, changedFiles),
 			Promise.all(
@@ -277,15 +276,15 @@ async function run(): Promise<void> {
 			),
 		])
 
-		console.log('Updating PR description and adding comments...')
+		core.info('Updating PR description and adding comments...')
 		await Promise.all([
 			updatePRDescription(octokit, github.context, prSummary),
 			addPRComment(octokit, github.context, fileAnalyses),
 		])
 
-		console.log('Code review process completed successfully')
+		core.info('Code review process completed successfully')
 	} catch (error) {
-		console.error('Error in run function:', error)
+		core.error(`Error in run function: ${error}`)
 		if (error instanceof Error) {
 			core.setFailed(error.message)
 		} else {
