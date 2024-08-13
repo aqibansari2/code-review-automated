@@ -136,7 +136,16 @@ async function updatePRDescription(
 	summary: string
 ) {
 	const currentBody = context.payload.pull_request!.body || ''
-	const newBody = `${currentBody}\n\n## GPT-4 Summary\n\n${summary}`
+	const gpt4SummaryRegex = /## GPT-4 Summary\n\n[\s\S]*?(?=\n\n|$)/
+	const newSummary = `## GPT-4 Summary\n\n${summary}`
+
+	let newBody: string
+	if (gpt4SummaryRegex.test(currentBody)) {
+		newBody = currentBody.replace(gpt4SummaryRegex, newSummary)
+	} else {
+		newBody = `${currentBody}\n\n${newSummary}`
+	}
+
 	await octokit.rest.pulls.update({
 		...context.repo,
 		pull_number: context.payload.pull_request!.number,
@@ -158,6 +167,17 @@ async function addPRComment(
 		return
 	}
 
+	// Get existing comments
+	const { data: existingComments } = await octokit.rest.issues.listComments({
+		...context.repo,
+		issue_number: context.payload.pull_request!.number,
+	})
+
+	// Find the existing GPT-4 Feedback comment
+	const existingFeedbackComment = existingComments.find((comment) =>
+		comment.body.startsWith('## GPT-4 Feedback')
+	)
+
 	let feedbackContent = '## GPT-4 Feedback\n\n'
 
 	for (const analysis of criticalAnalyses) {
@@ -166,11 +186,21 @@ async function addPRComment(
 		feedbackContent += `${analysis.feedback}\n\n`
 	}
 
-	await octokit.rest.issues.createComment({
-		...context.repo,
-		issue_number: context.payload.pull_request!.number,
-		body: feedbackContent,
-	})
+	if (existingFeedbackComment) {
+		// Update existing comment
+		await octokit.rest.issues.updateComment({
+			...context.repo,
+			comment_id: existingFeedbackComment.id,
+			body: feedbackContent,
+		})
+	} else {
+		// Create new comment
+		await octokit.rest.issues.createComment({
+			...context.repo,
+			issue_number: context.payload.pull_request!.number,
+			body: feedbackContent,
+		})
+	}
 }
 
 async function run(): Promise<void> {
